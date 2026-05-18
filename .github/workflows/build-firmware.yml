@@ -1,8 +1,9 @@
 name: Build firmware (reusable)
 
 # Reusable build used by build.yml, release.yml and daily-upstream-release.yml.
-# Builds the standard and debug UF2s for a given ref and, when `upload_tag` is
-# set, attaches them to that GitHub Release.
+# Always builds the standard and debug UF2s for a given ref; optionally also
+# the Pico W UF2 and a no-batt-led compile check. When `upload_tag` is set the
+# built UF2s are attached to that GitHub Release.
 
 on:
   workflow_call:
@@ -32,6 +33,16 @@ on:
         required: false
         type: string
         default: ""
+      picow:
+        description: Also build the Pico W UF2 (-DPICO_W_BUILD=ON)
+        required: false
+        type: boolean
+        default: false
+      no_batt_led_check:
+        description: Also compile-check the no-batt-led config (-DENABLE_BATT_LED=OFF)
+        required: false
+        type: boolean
+        default: false
 
 env:
   PICO_SDK_REF: 2.2.0
@@ -60,6 +71,18 @@ jobs:
           repository: ${{ inputs.repo == '' && github.repository || inputs.repo }}
           ref: ${{ inputs.ref }}
           submodules: recursive
+
+      - name: Resolve firmware version
+        env:
+          IN_VER: ${{ inputs.version }}
+        run: |
+          v="$IN_VER"
+          # A full 40-char commit SHA (build.yml passes github.sha) is
+          # shortened to 7 chars, matching the previous build.yml behaviour.
+          if printf '%s' "$v" | grep -qE '^[0-9a-f]{40}$'; then
+            v="${v:0:7}"
+          fi
+          echo "FW_VER=$v" >> "$GITHUB_ENV"
 
       - name: Prepare build dependency cache
         id: apt-cache
@@ -107,11 +130,9 @@ jobs:
           git -C "$PICO_SDK_PATH/lib/tinyusb" checkout --detach "$TINYUSB_REF"
 
       - name: Build standard firmware
-        env:
-          FIRMWARE_VERSION: ${{ inputs.version }}
         run: |
           VERSION_ARG=()
-          [ -n "$FIRMWARE_VERSION" ] && VERSION_ARG=(-DVERSION="$FIRMWARE_VERSION")
+          [ -n "${FW_VER:-}" ] && VERSION_ARG=(-DVERSION="$FW_VER")
           cmake -S . -B build/standard -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DPICO_SDK_PATH="$PICO_SDK_PATH" \
@@ -121,11 +142,9 @@ jobs:
           cp build/standard/ds5-bridge.uf2 "artifacts/ds5-bridge${{ inputs.asset_suffix }}.uf2"
 
       - name: Build Debug firmware
-        env:
-          FIRMWARE_VERSION: ${{ inputs.version }}
         run: |
           VERSION_ARG=()
-          [ -n "$FIRMWARE_VERSION" ] && VERSION_ARG=(-DVERSION="$FIRMWARE_VERSION")
+          [ -n "${FW_VER:-}" ] && VERSION_ARG=(-DVERSION="$FW_VER")
           cmake -S . -B build/debug -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DPICO_SDK_PATH="$PICO_SDK_PATH" \
@@ -134,6 +153,31 @@ jobs:
             "${VERSION_ARG[@]}"
           cmake --build build/debug --target ds5-bridge
           cp build/debug/ds5-bridge.uf2 "artifacts/ds5-bridge-debug${{ inputs.asset_suffix }}.uf2"
+
+      - name: Build Pico W firmware
+        if: inputs.picow
+        run: |
+          VERSION_ARG=()
+          [ -n "${FW_VER:-}" ] && VERSION_ARG=(-DVERSION="$FW_VER")
+          cmake -S . -B build/picow -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPICO_SDK_PATH="$PICO_SDK_PATH" \
+            -DPICO_W_BUILD=ON \
+            "${VERSION_ARG[@]}"
+          cmake --build build/picow --target ds5-bridge
+          cp build/picow/ds5-bridge.uf2 "artifacts/ds5-bridge-picow${{ inputs.asset_suffix }}.uf2"
+
+      - name: Build no-batt-led firmware (compile check only)
+        if: inputs.no_batt_led_check
+        run: |
+          VERSION_ARG=()
+          [ -n "${FW_VER:-}" ] && VERSION_ARG=(-DVERSION="$FW_VER")
+          cmake -S . -B build/no-batt-led -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPICO_SDK_PATH="$PICO_SDK_PATH" \
+            -DENABLE_BATT_LED=OFF \
+            "${VERSION_ARG[@]}"
+          cmake --build build/no-batt-led --target ds5-bridge
 
       - name: Upload UF2 artifacts
         uses: actions/upload-artifact@v4
