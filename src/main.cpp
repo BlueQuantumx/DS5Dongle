@@ -81,6 +81,50 @@ void interrupt_loop() {
     }
 }
 
+static void process_touchpad_corners(uint8_t *report) {
+    constexpr uint16_t MAX_X = 1920;
+    constexpr uint16_t MAX_Y = 1080;
+    constexpr uint16_t DELTA_X = 350;
+    constexpr uint16_t DELTA_Y = 350;
+
+    constexpr uint16_t CORNER_X  = DELTA_X;
+    constexpr uint16_t CORNER_X2 = MAX_X - DELTA_X;
+    constexpr uint16_t CORNER_Y  = DELTA_Y;
+    constexpr uint16_t CORNER_Y2 = MAX_Y - DELTA_Y;
+
+    if (!(report[9] & (1 << 1))) return;
+
+    bool corner_detected = false;
+
+    for (uint8_t base = 32; base <= 36; base += 4) {
+        if ((report[base] & 0x80) != 0) continue;
+
+        uint16_t x = report[base + 1] | ((report[base + 2] & 0x0F) << 8);
+        uint16_t y = ((report[base + 2] >> 4) & 0x0F) | (report[base + 3] << 4);
+
+        bool left   = x < CORNER_X;
+        bool right  = x >= CORNER_X2;
+        bool top    = y < CORNER_Y;
+        bool bottom = y >= CORNER_Y2;
+
+        if ((left || right) && (top || bottom)) {
+            corner_detected = true;
+            if (left && top)
+                report[8] |= (1 << 4);
+            else if (right && top)
+                report[8] |= (1 << 5);
+            else if (left && bottom)
+                report[8] |= (1 << 6);
+            else
+                report[8] |= (1 << 7);
+        }
+    }
+
+    if (corner_detected) {
+        report[9] &= ~(1 << 1);
+    }
+}
+
 void on_bt_data(CHANNEL_TYPE channel, uint8_t *data, uint16_t len) {
     // printf("[Main] BT data callback: channel=%u len=%u\n", channel, len);
     if (channel == INTERRUPT && data[1] == 0x31) {
@@ -90,6 +134,7 @@ void on_bt_data(CHANNEL_TYPE channel, uint8_t *data, uint16_t len) {
 
         if (get_config().polling_rate_mode != 2) {
             memcpy(interrupt_in_data, data + 3, 63);
+            process_touchpad_corners(interrupt_in_data);
 #if ENABLE_BATT_LED
             battery_led_note_report();
 #endif
@@ -104,6 +149,7 @@ void on_bt_data(CHANNEL_TYPE channel, uint8_t *data, uint16_t len) {
         //  and needs to be sent in the next interrupt report.
         critical_section_enter_blocking(&report_cs);
         memcpy(interrupt_in_data, data + 3, 63);
+        process_touchpad_corners(interrupt_in_data);
         report_dirty = true;
         critical_section_exit(&report_cs);
 #if ENABLE_BATT_LED
