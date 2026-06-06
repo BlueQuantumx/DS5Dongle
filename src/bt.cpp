@@ -38,6 +38,7 @@ static btstack_packet_callback_registration_t hci_event_callback_registration, l
 static bd_addr_t current_device_addr;
 static bool device_found = false;
 static bool new_pair = false; // 只有新匹配的设备才用创建channel，自动重连走的是service
+bool bt_inquiring = false;
 static hci_con_handle_t acl_handle = HCI_CON_HANDLE_INVALID;
 static uint16_t hid_control_cid;
 static uint16_t hid_interrupt_cid;
@@ -139,6 +140,25 @@ int bt_init() {
     }
 }*/
 
+void bt_inquiring_led() {
+    if (device_found) {
+        return;
+    }
+    static bool led_status = false;
+    if (!bt_inquiring) {
+        if (led_status) {
+            cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, false);
+        }
+        return;
+    }
+    static auto last_time = time_us_32();
+    if (time_us_32() - last_time > 200 * 1000) {
+        last_time = time_us_32();
+        led_status = !led_status;
+        cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, led_status);
+    }
+}
+
 static void hci_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size) {
     (void) channel;
 
@@ -151,6 +171,7 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
             if (state == HCI_STATE_WORKING) {
                 printf("[BT] Stack ready, start inquiry\n");
                 gap_inquiry_start(30);
+                bt_inquiring = true;
             }
             break;
         }
@@ -192,10 +213,11 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
                 break;
             }
             if (event_type == HCI_EVENT_INQUIRY_COMPLETE) {
-                printf("[HCI] Restart inquiry\n");
-                gap_inquiry_start(30);
+                printf("[HCI] Inquiry Complete\n");
+                // gap_inquiry_start(30);
                 gap_connectable_control(1);
                 gap_discoverable_control(1);
+                bt_inquiring = false;
             }
             break;
         }
@@ -206,7 +228,8 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
             if (opcode == HCI_OPCODE_HCI_CREATE_CONNECTION && status != ERROR_CODE_SUCCESS) {
                 device_found = false;
                 new_pair = false;
-                printf("[HCI] Create connection rejected, restart inquiry\n");
+                printf("[HCI] Create connection rejected\n");
+                bt_inquiring = false;
                 // gap_inquiry_start(30);
             }
             break;
@@ -239,7 +262,8 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
             } else {
                 device_found = false;
                 new_pair = false;
-                printf("[HCI] ACL connect failed status=0x%02X, restart inquiry\n", status);
+                printf("[HCI] ACL connect failed status=0x%02X\n", status);
+                bt_inquiring = false;
                 // gap_inquiry_start(30);
             }
             break;
@@ -291,6 +315,7 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
                 printf("[HCI] Authentication failed, drop stored key for %s\n", bd_addr_to_str(current_device_addr));
                 gap_drop_link_key_for_bd_addr(current_device_addr);
                 // gap_inquiry_start(30);
+                bt_inquiring = false;
             } else {
                 hci_send_cmd(&hci_set_connection_encryption, handle, 1);
             }
@@ -355,8 +380,8 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
 #if ENABLE_BATT_LED
             battery_led_on_disconnect();
 #endif
-            printf("[HCI] Disconnected reason=0x%02X, start inquiry\n", reason);
-            gap_inquiry_start(30);
+            printf("[HCI] Disconnected reason=0x%02X\n", reason);
+            // gap_inquiry_start(30);
             break;
         }
 
