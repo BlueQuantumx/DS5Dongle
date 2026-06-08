@@ -141,22 +141,7 @@ else()
     set(PICO_FLASH_SPI_CLKDIV 2)
 endif()
 target_compile_definitions(bs2_default PRIVATE PICO_FLASH_SPI_CLKDIV=${PICO_FLASH_SPI_CLKDIV})
-
-# On RP2350, boot stage 2 is not executed unless PICO_EMBED_XIP_SETUP=1 is
-# defined. Without this, QMI XIP config (including PICO_FLASH_SPI_CLKDIV above)
-# is left at whatever the bootrom auto-detected from the flash chip's SFDP
-# table. For the Waveshare board (which ships with a Puya PY25Q128HA flash
-# chip rather than the schematic-listed Winbond W25Q128JVSIQ), the bootrom
-# defaults to CLKDIV=3 and Fast Read Dual I/O (0xBB) — which puts flash SPI
-# at 106.7MHz at 320MHz sys_clk, over Puya's 104MHz dual-mode spec. This
-# causes intermittent XIP read corruption that manifests as choppy audio.
-# Embedding boot2 forces boot2_w25q080 to actually run, applying our
-# PICO_FLASH_SPI_CLKDIV=4 (giving 80MHz flash SPI, well within Puya spec)
-# and switching to Fast Read Quad I/O (0xEB) for full bandwidth.
-if (WAVESHARE_RP2350B_PLUS_W_BUILD)
-    target_compile_definitions(ds5-bridge PRIVATE PICO_EMBED_XIP_SETUP=1)
-endif()
-
+target_compile_definitions(ds5-bridge PRIVATE PICO_EMBED_XIP_SETUP=1)
 target_compile_definitions(ds5-bridge PRIVATE
         CYW43_LWIP=0
         ENABLE_SERIAL=${ENABLE_SERIAL_VALUE}
