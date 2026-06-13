@@ -42,6 +42,7 @@ static WDL_Resampler resampler;
 static uint8_t reportSeqCounter = 0;
 static uint8_t packetCounter = 0;
 static bool plug_headset = false;
+static bool mic_active = false; // host has opened the mic IN interface (alt != 0)
 alignas(8) static uint32_t audio_core1_stack[8192];
 queue_t audio_fifo;
 queue_t mic_fifo;
@@ -62,6 +63,12 @@ struct mic_decode_element {
 
 void set_headset(bool state) {
     plug_headset = state;
+}
+
+// Called from tud_audio_set_itf_cb when the host opens/closes the mic IN
+// interface. Gates controller-mic streaming so it only runs while recording.
+void set_mic_active(bool active) {
+    mic_active = active;
 }
 
 void __not_in_flash_func(audio_loop)() {
@@ -143,7 +150,11 @@ void __not_in_flash_func(audio_loop)() {
         reportSeqCounter = (reportSeqCounter + 1) & 0x0F;
         pkt[2] = 0x11 | 0 << 6 | 1 << 7;
         pkt[3] = 7;
-        pkt[4] = 0b11111111; // bit0 enables controller mic streaming
+        // bit0 enables controller mic streaming. Gate it on the host actually
+        // opening the mic IN interface (set_mic_active from tud_audio_set_itf_cb)
+        // so the DualSense only streams mic audio -- and core1 only decodes it --
+        // while an app is recording. Other bits (speaker/haptics) stay enabled.
+        pkt[4] = mic_active ? 0b11111111 : 0b11111110;
         const auto buf_len = get_config().audio_buffer_length;
         pkt[5] = buf_len;
         pkt[6] = buf_len;
