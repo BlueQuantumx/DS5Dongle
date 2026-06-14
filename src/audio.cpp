@@ -19,6 +19,7 @@
 #include "utils.h"
 #include "pico/multicore.h"
 #include "pico/platform.h"
+#include "pico/flash.h"
 #include "pico/util/queue.h"
 #include "config.h"
 #include "state_mgr.h"
@@ -69,6 +70,10 @@ void set_headset(bool state) {
 // interface. Gates controller-mic streaming so it only runs while recording.
 void set_mic_active(bool active) {
     mic_active = active;
+}
+
+bool audio_mic_active() {
+    return mic_active;
 }
 
 void __not_in_flash_func(audio_loop)() {
@@ -152,9 +157,10 @@ void __not_in_flash_func(audio_loop)() {
         pkt[3] = 7;
         // bit0 enables controller mic streaming. Gate it on the host actually
         // opening the mic IN interface (set_mic_active from tud_audio_set_itf_cb)
-        // so the DualSense only streams mic audio -- and core1 only decodes it --
-        // while an app is recording. Other bits (speaker/haptics) stay enabled.
-        pkt[4] = mic_active ? 0b11111111 : 0b11111110;
+        // AND on the user not disabling the mic (config.disable_mic), so the
+        // DualSense only streams mic audio -- and core1 only decodes it -- while
+        // an app is recording. Other bits (speaker/haptics) stay enabled.
+        pkt[4] = (mic_active && !get_config().disable_mic) ? 0b11111111 : 0b11111110;
         const auto buf_len = get_config().audio_buffer_length;
         pkt[5] = buf_len;
         pkt[6] = buf_len;
@@ -171,15 +177,19 @@ void __not_in_flash_func(audio_loop)() {
         pkt[77] = SAMPLE_SIZE;
         memcpy(pkt + 78, haptic_buf, SAMPLE_SIZE);
 #if !DISABLE_SPEAKER_PROC
-        // Speaker Audio Data
-        pkt[142] = (plug_headset ? 0x16 : 0x13) | 0 << 6 | 1 << 7; // Speaker: 0x13
-        // L Headset Mono: 0x14
-        // L Headset R Speaker: 0x15
-        // Headset: 0x16
-        pkt[143] = 200;
-        critical_section_enter_blocking(&opus_cs);
-        memcpy(pkt + 144, opus_buf, 200);
-        critical_section_exit(&opus_cs);
+        // Speaker Audio Data -- omitted entirely when the user disables the
+        // speaker/headset (config.disable_speaker), so the controller's speaker
+        // amp isn't driven (mirrors the Pico W no-speaker report).
+        if (!get_config().disable_speaker) {
+            pkt[142] = (plug_headset ? 0x16 : 0x13) | 0 << 6 | 1 << 7; // Speaker: 0x13
+            // L Headset Mono: 0x14
+            // L Headset R Speaker: 0x15
+            // Headset: 0x16
+            pkt[143] = 200;
+            critical_section_enter_blocking(&opus_cs);
+            memcpy(pkt + 144, opus_buf, 200);
+            critical_section_exit(&opus_cs);
+        }
 #endif
 
         bt_write(pkt, sizeof(pkt));
@@ -259,6 +269,10 @@ static void __not_in_flash_func(mic_proc)() {
 }
 
 void __not_in_flash_func(core1_entry)() {
+    // Register core1 as a flash-safe victim so core0's flash_safe_execute()
+    // (config_save) actually parks this core while flash is erased/programmed,
+    // instead of letting it fault on XIP. Requires PICO_FLASH_ASSUME_CORE1_SAFE=0.
+    flash_safe_execute_core_init();
     int error = 0;
     encoder = opus_encoder_create(48000, 2,OPUS_APPLICATION_AUDIO, &error);
     if (error != 0) {
