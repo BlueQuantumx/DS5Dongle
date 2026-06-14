@@ -17,6 +17,7 @@
 #include "classic/sdp_server.h"
 #include "config.h"
 #include "state_mgr.h"
+#include "dse.h"
 #include "wake.h"
 #include "pico/util/queue.h"
 #if ENABLE_BATT_LED
@@ -427,6 +428,9 @@ static void __not_in_flash_func(l2cap_packet_handler)(uint8_t packet_type, uint1
                     printf("Connected DSE Controller\n");
                     check_dse = false;
                     is_dse = true;
+                    // Unlock Edge profiles; USB connects immediately, profile
+                    // reads are gated until the snapshot is prepared.
+                    dse_on_connect();
 #if !ENABLE_SERIAL
                     tud_connect();
 #endif
@@ -446,6 +450,7 @@ static void __not_in_flash_func(l2cap_packet_handler)(uint8_t packet_type, uint1
                 printf("[L2CAP] Stored Feature Report 0x%02X, len=%u\n", report_id, size - 1);
 #endif
             }
+            dse_on_control_packet(packet, size);
 #if ENABLE_VERBOSE
             printf("[L2CAP] HID Control data len=%u\n", size);
             printf_hexdump(packet, size);
@@ -563,6 +568,17 @@ static void __not_in_flash_func(l2cap_packet_handler)(uint8_t packet_type, uint1
     }
 }
 
+// Accessors used by the DSE profile module (dse.cpp).
+uint16_t bt_control_cid() {
+    return hid_control_cid;
+}
+
+void bt_control_send(const uint8_t *data, uint16_t len) {
+    if (hid_control_cid != 0) {
+        l2cap_send(hid_control_cid, const_cast<uint8_t *>(data), len);
+    }
+}
+
 void __not_in_flash_func(bt_write)(const uint8_t *data, const uint16_t len) {
     if (hid_interrupt_cid == 0) return;
     static send_element packet{};
@@ -593,7 +609,10 @@ vector<uint8_t> get_feature_data(uint8_t reportId, uint16_t len) {
         // DSE: Set Profile Save?
         reportId == 0x63 ||
         reportId == 0x65 ||
-        reportId == 0x64
+        reportId == 0x64 ||
+        // DSE profile slots: return cache, but refetch in background so the
+        // PS app's unlock(0x80) -> re-read flow sees fresh controller data.
+        dse_is_profile_report(reportId)
     ) {
         if (hid_control_cid != 0) {
             uint8_t get_feature[] = {0x43, reportId};
@@ -618,6 +637,7 @@ void set_feature_data(uint8_t reportId, uint8_t *data, uint16_t len) {
         printf("[L2CAP] Requesting Set Feature Report 0x%02X\n", reportId);
         printf_hexdump(get_feature, len + 2);
 #endif
+        dse_on_profile_write(reportId);
     }
 }
 
