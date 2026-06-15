@@ -13,6 +13,7 @@
 #include "config.h"
 #include "device/usbd.h"
 #include "pico/time.h"
+#include "pico/bootrom.h"
 #include "audio.h"
 
 // spk_active (main.cpp) + audio_mic_active() (audio.cpp) are surfaced in the
@@ -130,6 +131,12 @@ static bool set_config_field(uint8_t field_id, uint8_t const *buffer, uint16_t b
             new_config.disable_speaker = value;
             break;
         }
+        case 0x11: {
+            uint8_t value{};
+            if (!read_config_value(value, buffer, bufsize)) return false;
+            new_config.enable_wake = value;
+            break;
+        }
         default:
             printf("[CMD] Unknown config field id: 0x%02X\n", field_id);
             return false;
@@ -215,6 +222,14 @@ void pico_cmd_set(uint8_t cmd_id, uint8_t const *buffer, uint16_t bufsize) {
             if (spk_active && !get_config().disable_speaker) flags |= 0x02;
             buf[3] = flags;
             feature_data[0x81].assign(buf, buf + sizeof(buf));
+            break;
+        }
+        case 0x07: {
+            // Reboot into BOOTSEL (USB mass-storage bootloader) so the dongle can be
+            // reflashed from the host without the physical BOOTSEL button. The
+            // controller's enumeration is unchanged -- this is just a host command.
+            printf("[CMD] Reboot to BOOTSEL (USB bootloader)\n");
+            reset_usb_boot(0, 0); // noreturn
             break;
         }
     }
