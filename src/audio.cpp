@@ -35,11 +35,11 @@
 #define MIC_CHANNELS      1
 #define MIC_FRAMES        480
 #define MIC_OPUS_SIZE     71   // bytes per opus-encoded mic frame from the DualSense
-#define HAPTICS_DECIMATION 16   // 48 kHz USB haptics channels -> 3 kHz BT haptics audio
 
 using std::clamp;
 using std::max;
 
+static WDL_Resampler resampler;
 static uint8_t reportSeqCounter = 0;
 static uint8_t packetCounter = 0;
 static bool plug_headset = false;
@@ -139,9 +139,8 @@ void __not_in_flash_func(audio_loop)() {
 
     static float audio_buf[512 * 2];
     static uint audio_buf_pos = 0;
-    static int8_t haptic_buf[SAMPLE_SIZE];
-    static int haptic_buf_pos = 0;
-    static uint8_t haptic_phase = 0;
+    WDL_ResampleSample *in_buf;
+    int nframes = resampler.ResamplePrepare(frames, OUTPUT_CHANNELS, &in_buf);
 
     // const float audio_gain = mute[0] ? 0.0f : powf(10.0f, get_config().speaker_volume / 20.0f);
     const float haptics_gain = cfg.haptics_gain;
@@ -151,7 +150,7 @@ void __not_in_flash_func(audio_loop)() {
         while (queue_try_remove(&audio_fifo, NULL)) {}
     }
 #endif
-    for (int i = 0; i < frames; i++) {
+    for (int i = 0; i < nframes; i++) {
 #if !DISABLE_SPEAKER_PROC
         if (speaker_enabled) {
             audio_buf[audio_buf_pos++] = raw[i * INPUT_CHANNELS] / 32768.0f;
@@ -170,19 +169,23 @@ void __not_in_flash_func(audio_loop)() {
         }
 #endif
 
-        // 48 kHz -> 3 kHz is an exact 16:1 ratio. The old WDL path used linear
-        // interpolation with no filter, so at integer phase this is equivalent
-        // to emitting every 16th source frame while doing far less RAM traffic.
-        const bool emit_haptic_sample = haptic_phase == 0;
-        if (++haptic_phase == HAPTICS_DECIMATION) haptic_phase = 0;
-        if (!emit_haptic_sample) {
-            continue;
-        }
+        in_buf[i * 2] = static_cast<WDL_ResampleSample>(clamp(raw[i * INPUT_CHANNELS + 2] / 32768.0f * haptics_gain,
+                                                              -1.0f, 1.0f));
+        in_buf[i * 2 + 1] = static_cast<WDL_ResampleSample>(clamp(raw[i * INPUT_CHANNELS + 3] / 32768.0f * haptics_gain,
+                                                                  -1.0f, 1.0f));
+    }
 
-        int val_l = static_cast<int>(clamp(raw[i * INPUT_CHANNELS + 2] / 32768.0f * haptics_gain,
-                                           -1.0f, 1.0f) * 127.0f);
-        int val_r = static_cast<int>(clamp(raw[i * INPUT_CHANNELS + 3] / 32768.0f * haptics_gain,
-                                           -1.0f, 1.0f) * 127.0f);
+    // 3. 48kHz -> 3kHz 重采样
+    static WDL_ResampleSample out_buf[SAMPLE_SIZE]; // 64 floats = 32帧 × 2ch
+    const int out_frames = resampler.ResampleOut(out_buf, nframes, nframes / 4, OUTPUT_CHANNELS);
+
+    static int8_t haptic_buf[SAMPLE_SIZE];
+    static int haptic_buf_pos = 0;
+
+    // 4. 转换为int8并缓冲，满64字节即组包发送
+    for (int i = 0; i < out_frames; i++) {
+        int val_l = static_cast<int>(out_buf[i * 2] * 127.0f);
+        int val_r = static_cast<int>(out_buf[i * 2 + 1] * 127.0f);
         haptic_buf[haptic_buf_pos++] = (int8_t) clamp(val_l, -128, 127); // 似乎clamp有点多余？还是以防万一吧
         haptic_buf[haptic_buf_pos++] = (int8_t) clamp(val_r, -128, 127);
 
@@ -238,6 +241,10 @@ void __not_in_flash_func(audio_loop)() {
 }
 
 void audio_init() {
+    resampler.SetMode(true, 0, false);
+    resampler.SetRates(48000, 3000);
+    resampler.SetFeedMode(true);
+    resampler.Prealloc(2, 48, 4);
     // Mic queues are read from audio_loop on core0 every iteration, so they
     // must exist regardless of the speaker-proc build flag.
     queue_init(&mic_fifo, sizeof(mic_element), 2);
