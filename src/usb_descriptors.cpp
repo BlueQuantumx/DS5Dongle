@@ -126,7 +126,7 @@ tusb_desc_device_t desc_device =
 // Application return pointer to descriptor
 uint8_t const *tud_descriptor_device_cb(void) {
     desc_device.idProduct = ds_mode() ? 0x0CE6 : 0x0DF2;
-    desc_device.iSerialNumber = get_config().disable_usb_sn ? 0x00 : 0x03;
+    desc_device.iSerialNumber = get_config().enable_usb_sn ? 0x03 : 0x00;
     // USB 2.1 (so the host requests the BOS / MS OS 2.0 selective-suspend opt-in)
     // only when wake is enabled; plain USB 2.0 otherwise.
     desc_device.bcdUSB = get_config().enable_wake ? 0x0210 : 0x0200;

@@ -83,6 +83,18 @@ struct send_element {
 
 absolute_time_t inactive_time = 0; // 手柄长时间静默
 
+const uint8_t state_init_data[66] = {
+    0xa2, 0x31, 0x01,
+    0x7f, 0x7d, 0x7f, 0x7e, 0x00, 0x00, 0xa7,
+    0x08, 0x00, 0x00, 0x00, 0x52, 0x43, 0x30, 0x41,
+    0x01, 0x00, 0x0e, 0x00, 0xef, 0xff, 0x03, 0x03,
+    0x7b, 0x1b, 0x18, 0xf0, 0xcc, 0x9c, 0x60, 0x00,
+    0xfc, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00,
+    0x00, 0x00, 0x09, 0x09, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0xa7, 0xad, 0x60, 0x00, 0x29, 0x18, 0x00,
+    0x53, 0x9f, 0x28, 0x35, 0xa5, 0xa8, 0x0c, 0x8b
+};
+
 void bt_register_data_callback(bt_data_callback_t callback) {
     bt_data_callback = callback;
 }
@@ -143,6 +155,8 @@ int bt_init() {
     gap_ssp_set_io_capability(SSP_IO_CAPABILITY_DISPLAY_YES_NO);
     gap_ssp_set_authentication_requirement(SSP_IO_AUTHREQ_MITM_PROTECTION_NOT_REQUIRED_GENERAL_BONDING);
 
+    gap_set_page_scan_activity(0x0012, 0x0012); // 11.25ms
+    gap_set_page_scan_type(PAGE_SCAN_MODE_INTERLACED);
     gap_connectable_control(1);
     gap_discoverable_control(1);
 
@@ -581,11 +595,11 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
 
         case HCI_EVENT_DISCONNECTION_COMPLETE: {
 #if !ENABLE_SERIAL
-            // Hide the USB device whenever no controller is paired (upstream
-            // behavior) -- UNLESS wake is enabled at runtime, where we must stay on
-            // the bus across controller power-cycles so tud_suspend_cb can later fire
-            // and tud_remote_wakeup() can signal a wake when the controller returns.
-            if (!get_config().enable_wake) {
+            // Hide the USB device when no controller is paired (upstream behavior), EXCEPT when
+            // wake is on (stay on the bus so a returning controller can signal a host wake) or
+            // while the host is suspended -- hiding then re-showing re-enumerates, and a USB
+            // re-connect wakes a sleeping host. Defer the hide until the host is awake.
+            if (!get_config().enable_wake && !tud_suspended()) {
                 tud_disconnect();
             }
 #endif
@@ -598,13 +612,13 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
             bt_rssi = 0;
             hid_control_cid = 0;
             hid_interrupt_cid = 0;
-            feature_data.clear();
             while (queue_try_remove(&send_fifo, NULL)) {}
             cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, false);
 #if ENABLE_BATT_LED
             battery_led_on_disconnect();
 #endif
             printf("[HCI] Disconnected reason=0x%02X\n", reason);
+            bt_data_callback(INTERRUPT, const_cast<uint8_t *>(state_init_data), sizeof(state_init_data));
             // gap_inquiry_start(30);
             // bt_inquiring = true;
             break;
@@ -630,7 +644,7 @@ static void __not_in_flash_func(l2cap_packet_handler)(uint8_t packet_type, uint1
             bt_data_callback(INTERRUPT, packet, size);
 
             // 静默检测
-            if (!(packet[2] & 1) || get_config().disable_inactive_disconnect) {
+            if (!(packet[2] & 1) || get_config().inactive_time == 0) {
                 return;
             }
             if (packet[3] < 120 || packet[3] > 140 ||
@@ -657,14 +671,15 @@ static void __not_in_flash_func(l2cap_packet_handler)(uint8_t packet_type, uint1
                     // reads are gated until the snapshot is prepared.
                     dse_on_connect();
 #if !ENABLE_SERIAL
-                    tud_connect();
+                    // don't re-enumerate while the host is suspended -- it would wake a sleeping host
+                    if (!tud_suspended()) tud_connect();
 #endif
                 } else if (packet[0] == 0x02) {
                     printf("Connected DS5 Controller\n");
                     check_dse = false;
                     is_dse = false;
 #if !ENABLE_SERIAL
-                    tud_connect();
+                    if (!tud_suspended()) tud_connect();
 #endif
                 }
             }
@@ -832,13 +847,9 @@ vector<uint8_t> get_feature_data(uint8_t reportId, uint16_t len) {
     if (has_cached_report) {
         ret = feature_data[reportId];
     }
-    const bool use_pico_cmd_response =
-        reportId == 0x81 &&
-        ret.size() >= 2 &&
-        ret[0] == 0x66;
     if (!has_cached_report ||
         // Get Test Command Result
-        (reportId == 0x81 && !use_pico_cmd_response) ||
+        reportId == 0x81 ||
         // DSE: Set Profile Save?
         reportId == 0x63 ||
         reportId == 0x65 ||
@@ -854,9 +865,6 @@ vector<uint8_t> get_feature_data(uint8_t reportId, uint16_t len) {
             printf("[L2CAP] Requesting Get Feature Report 0x%02X\n", reportId);
 #endif
         }
-    }
-    if (use_pico_cmd_response) {
-        feature_data.erase(reportId);
     }
     return ret;
 }
@@ -884,6 +892,7 @@ void bt_power_off_controller() {
 }
 
 void init_feature() {
+    feature_data.clear();
     get_feature_data(0x09, 20);
     get_feature_data(0x20, 64);
     get_feature_data(0x22, 64);

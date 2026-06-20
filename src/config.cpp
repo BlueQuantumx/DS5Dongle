@@ -15,7 +15,7 @@
 #include "pico/flash.h"
 
 constexpr uint32_t CONFIG_MAGIC = 0x66ccff00;
-constexpr uint16_t CONFIG_VERSION = 4;
+constexpr uint16_t CONFIG_VERSION = 5;
 constexpr uint32_t CONFIG_FLASH_OFFSET = PICO_FLASH_SIZE_BYTES - FLASH_SECTOR_SIZE;
 static Config config{};
 bool is_dse = false;
@@ -45,6 +45,11 @@ void config_valid() {
         printf("[Config] Config Body size is invalid\n");
     }
     auto body = &config.body;
+    if (body->config_version != CONFIG_VERSION) {
+        memset(body, 0, sizeof(Config_body));
+        body->config_version = CONFIG_VERSION;
+        printf("[Config] Warning: Config may breaking change. Reset to default\n");
+    }
     if (std::isnan(body->haptics_gain) || body->haptics_gain < 1.0f || body->haptics_gain > 2.0f) {
         body->haptics_gain = 1.0f;
         printf("[Config] Haptics Gain value is invalid\n");
@@ -57,28 +62,20 @@ void config_valid() {
         body->headset_volume = 100;
         printf("[Config] Headset Volume is invalid\n");
     }
-    if (body->sync_spk_headset_volume > 1) {
-        body->sync_spk_headset_volume = 1;
-        printf("[Config] sync_spk_headset_volume is invalid\n");
-    }
     if (body->speaker_gain < 0 || body->speaker_gain > 7) {
         body->speaker_gain = 2;
         printf("[Config] speaker_gain is invalid\n");
     }
-    if (body->inactive_time < 5 || body->inactive_time > 60) {
+    if (body->inactive_time < 0 || body->inactive_time > 60) {
         body->inactive_time = 30;
         printf("[Config] Inactive time is invalid\n");
-    }
-    if (body->disable_inactive_disconnect > 1) {
-        body->disable_inactive_disconnect = 0;
-        printf("[Config] disable_auto_disconnect is invalid\n");
     }
     if (body->disable_pico_led > 1) {
         body->disable_pico_led = 0;
         printf("[Config] disable_pico_led is invalid\n");
     }
     if (body->polling_rate_mode > 2) {
-        body->polling_rate_mode = 0;
+        body->polling_rate_mode = 1;
         printf("[Config] polling_rate_mode is invalid\n");
     }
     if (body->audio_buffer_length < 16 || body->audio_buffer_length > 128) {
@@ -89,17 +86,9 @@ void config_valid() {
         body->controller_mode = 2;
         printf("[Config] controller_mode is invalid\n");
     }
-    if (body->config_version != CONFIG_VERSION) {
-        body->config_version = CONFIG_VERSION;
-        printf("[Config] Warning: Config may breaking change\n");
-    }
-    if (body->lock_volume > 1) {
-        body->lock_volume = 0;
-        printf("[Config] lock_volume is invalid\n");
-    }
-    if (body->disable_usb_sn > 1) {
-        body->disable_usb_sn = 0;
-        printf("[Config] Warning: disable_usb_sn is invalid\n");
+    if (body->enable_usb_sn > 1) {
+        body->enable_usb_sn = 0;
+        printf("[Config] Warning: enable_usb_sn is invalid\n");
     }
     if (body->ps_shortcut_enabled > 1) {
         body->ps_shortcut_enabled = 0;
@@ -116,6 +105,10 @@ void config_valid() {
     if (body->enable_wake > 1) {
         body->enable_wake = 0;
         printf("[Config] enable_wake is invalid\n");
+    }
+    if (body->trigger_reduce > 10) {
+        body->trigger_reduce = 0;
+        printf("[Config] trigger_reduce is invalid\n");
     }
 }
 
@@ -173,7 +166,9 @@ void set_config(const uint8_t *new_config, const uint16_t len) {
         cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, true);
     }
     set_volume(config.body.speaker_volume,config.body.headset_volume);
-    set_gain(config.body.speaker_gain);
+    if (config.body.speaker_gain != 0) {
+        set_gain(config.body.speaker_gain);
+    }
 }
 
 void set_config(const Config_body &new_config) {
