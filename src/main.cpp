@@ -120,9 +120,9 @@ static void __not_in_flash_func(process_touchpad_corners)(uint8_t *report) {
             else if (right && top)
                 report[8] |= (1 << 5);
             else if (left && bottom)
-                report[8] |= (1 << 6);
-            else
                 report[8] |= (1 << 7);
+            else
+                report[8] |= (1 << 6);
         }
     }
 
