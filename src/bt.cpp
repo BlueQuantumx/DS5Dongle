@@ -726,6 +726,18 @@ static void __not_in_flash_func(l2cap_packet_handler)(uint8_t packet_type, uint1
                     printf("Init DualSense\n");
 
                     init_feature();
+                    SetStateData state = {
+                        .AllowLedColor = 1,
+                        .AllowLightBrightnessChange = 1,
+                        .AllowColorLightFadeAnimation = 1,
+                        .LightFadeAnimation = LightFadeAnimation::FadeOut,
+                        .LightBrightness = LightBrightness::Bright,
+                        // RGB LED: R, G, B (Nijika Color!)✨
+                        .LedRed = 0xff,
+                        .LedGreen = 0xd7,
+                        .LedBlue = 0x00,
+                    };
+                    update_state(state);
 
                     const auto mtu = l2cap_get_remote_mtu_for_local_cid(hid_interrupt_cid);
                     printf("[L2CAP] Remote Interrupt MTU: %d\n",mtu);
@@ -887,4 +899,14 @@ void init_feature() {
     // If len == 1, it's DS5
     check_dse = true;
     get_feature_data(0x70, 64);
+}
+
+void update_state(const SetStateData& state) {
+    uint8_t pkt[142]{};
+    pkt[0] = 0x32;
+    pkt[1] = 0x10;
+    pkt[2] = 0x90;
+    pkt[3] = 0x3f;
+    memcpy(pkt + 4,&state,sizeof(SetStateData));
+    bt_write(pkt,sizeof(pkt));
 }

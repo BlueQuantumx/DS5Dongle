@@ -2,6 +2,8 @@
 // Created by awalol on 2026/3/4.
 //
 
+#pragma once
+
 #include <array>
 #include <cstdint>
 #include <iomanip>

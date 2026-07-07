@@ -57,19 +57,13 @@ static bool audio10_set_req_entity(tusb_control_request_t const *p_request, uint
 
                         mute[index] = pBuff[0];
 
-                        uint8_t pkt[142]{};
-                        pkt[0] = 0x32;
-                        pkt[1] = 0x10;
-                        pkt[2] = 0x90;
-                        pkt[3] = 0x3f;
                         SetStateData state = {
                             .AllowAudioMute = 1,
                             .MicMute = mute[1],
                             .SpeakerMute = mute[0],
                             .HeadphoneMute = mute[0],
                         };
-                        memcpy(pkt + 4,&state,sizeof(state));
-                        bt_write(pkt,sizeof(pkt));
+                        update_state(state);
 
                         TU_LOG2("    Set Mute: %d of entity: %u\r\n", mute[index], entityID);
                         return true;
@@ -87,32 +81,20 @@ static bool audio10_set_req_entity(tusb_control_request_t const *p_request, uint
 
                         volume[index] = static_cast<float>(*reinterpret_cast<int16_t const *>(pBuff)) / 256;
                         if (entityID == UAC1_ENTITY_SPK_FEATURE_UNIT) {
-                            uint8_t pkt[142]{};
-                            pkt[0] = 0x32;
-                            pkt[1] = 0x10;
-                            pkt[2] = 0x90;
-                            pkt[3] = 0x3f;
                             SetStateData state = {
                                 .AllowHeadphoneVolume = 1,
                                 .AllowSpeakerVolume = 1,
                                 .VolumeHeadphones = static_cast<uint8_t>(100.0f + volume[index]),
                                 .VolumeSpeaker = static_cast<uint8_t>(100.0f + volume[index]),
                             };
-                            memcpy(pkt + 4,&state,sizeof(state));
-                            bt_write(pkt,sizeof(pkt));
+                            update_state(state);
                         }
                         if (entityID == UAC1_ENTITY_MIC_FEATURE_UNIT) {
-                            uint8_t pkt[142]{};
-                            pkt[0] = 0x32;
-                            pkt[1] = 0x10;
-                            pkt[2] = 0x90;
-                            pkt[3] = 0x3f;
                             SetStateData state = {
                                 .AllowMicVolume = 1,
                                 .VolumeMic = static_cast<uint8_t>(volume[index]),
                             };
-                            memcpy(pkt + 4,&state,sizeof(state));
-                            bt_write(pkt,sizeof(pkt));
+                            update_state(state);
                         }
 
                         TU_LOG2("    Set Volume: %d dB of entity: %u\r\n", volume[index], entityID);

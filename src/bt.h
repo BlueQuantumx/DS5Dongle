@@ -15,6 +15,8 @@ enum CHANNEL_TYPE {
 
 typedef void (*bt_data_callback_t)(CHANNEL_TYPE channel, uint8_t *data, uint16_t len);
 
+struct SetStateData;
+
 int bt_init();
 void bt_register_data_callback(bt_data_callback_t callback);
 void bt_send_packet(uint8_t *data, uint16_t len);
@@ -36,5 +38,6 @@ void bt_inquiring_led();
 void bt_bootsel_click_action();
 void bt_bootsel_hold_action();
 void bt_blacklist_persist_if_dirty();
+void update_state(const SetStateData& state);
 
 #endif //DS5_BRIDGE_BT_H
