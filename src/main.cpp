@@ -5,9 +5,14 @@
 #include <cstdio>
 #include "bsp/board_api.h"
 #include "bt.h"
+#include "button_functions.h"
 #include "utils.h"
 #include "resample.h"
 #include "audio.h"
+#include "wake.h"
+#ifdef ENABLE_WAKE_HID
+#include "ps_shortcut.h"
+#endif
 #include "hardware/clocks.h"
 #include "hardware/vreg.h"
 #include "hardware/watchdog.h"
@@ -18,6 +23,7 @@
 #endif
 #include "config.h"
 #include "cmd.h"
+#include "dse.h"
 #if ENABLE_BATT_LED
 #include "battery_led.h"
 #endif
@@ -43,7 +49,7 @@ uint8_t interrupt_in_data[63] = {
 critical_section_t report_cs;
 volatile bool report_dirty = false;
 
-void interrupt_loop() {
+void __not_in_flash_func(interrupt_loop)() {
     if (!tud_hid_ready()) return;
 
     // TODO: Refactor for better code reuse
@@ -81,7 +87,7 @@ void interrupt_loop() {
     }
 }
 
-static void process_touchpad_corners(uint8_t *report) {
+static void __not_in_flash_func(process_touchpad_corners)(uint8_t *report) {
     constexpr uint16_t MAX_X = 1920;
     constexpr uint16_t MAX_Y = 1080;
     constexpr uint16_t DELTA_X = 350;
@@ -125,12 +131,29 @@ static void process_touchpad_corners(uint8_t *report) {
     }
 }
 
-void on_bt_data(CHANNEL_TYPE channel, uint8_t *data, uint16_t len) {
+void __not_in_flash_func(on_bt_data)(CHANNEL_TYPE channel, uint8_t *data, uint16_t len) {
     // printf("[Main] BT data callback: channel=%u len=%u\n", channel, len);
-    if (channel == INTERRUPT && data[1] == 0x31) {
+    if (channel == INTERRUPT && len > 2 && data[1] == 0x31) {
+        // Mic audio: controller signals mic payload via bit1 of data[2];
+        // the opus-encoded mic frame starts at data+4.
+        if ((data[2] >> 1) & 1) {
+            if (len >= 4) {
+                mic_add_queue(data + 4, len - 4);
+            }
+            return;
+        }
         if ((data[56] & 1) != (interrupt_in_data[53] & 1)) {
             set_headset(data[56] & 1);
         }
+
+        // Wake-on-PS must observe every BT input report regardless of polling
+        // mode: the wake feature has its own state to maintain (button-byte
+        // diff for edge detection) and short-circuiting it on non-2 polling
+        // modes silently breaks wake while the host is suspended.
+        wake_on_bt_input(data + 3, len - 3);
+        #ifdef ENABLE_WAKE_HID
+        ps_shortcut_tick(data + 3, len - 3);
+        #endif
 
         if (get_config().polling_rate_mode != 2) {
             memcpy(interrupt_in_data, data + 3, 63);
@@ -142,9 +165,9 @@ void on_bt_data(CHANNEL_TYPE channel, uint8_t *data, uint16_t len) {
         }
 
         // We add the critical section here to avoid any race conditions when writing to the interrupt_in_data buffer,
-        // which is shared between the main loop and this callback. 
-        // The critical section ensures that only one thread can access the buffer at a time, 
-        // preventing data corruption and ensuring thread safety.   
+        // which is shared between the main loop and this callback.
+        // The critical section ensures that only one thread can access the buffer at a time,
+        // preventing data corruption and ensuring thread safety.
         // We also set the report_dirty flag to true to indicate that new data is available
         //  and needs to be sent in the next interrupt report.
         critical_section_enter_blocking(&report_cs);
@@ -163,6 +186,15 @@ void on_bt_data(CHANNEL_TYPE channel, uint8_t *data, uint16_t len) {
 // Return zero will cause the stack to STALL request
 uint16_t tud_hid_get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type, uint8_t *buffer,
                                uint16_t reqlen) {
+#ifdef ENABLE_WAKE_HID
+    if (itf == 1) {
+        if (reqlen >= 8) {
+            memset(buffer, 0, 8);
+            return 8;
+        }
+        return 0;
+    }
+#endif
     (void) itf;
     (void) report_id;
     (void) report_type;
@@ -171,6 +203,14 @@ uint16_t tud_hid_get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t
 
     if (is_pico_cmd(report_id)) {
         return pico_cmd_get(report_id, buffer, reqlen);
+    }
+
+    // DSE profiles: while the unlock + prefetch is still in progress, return 0
+    // (NAK) for profile reads so the PS app retries rather than caching an
+    // empty snapshot. Still kick off the background BT fetch.
+    if (dse_is_profile_report(report_id) && !dse_profiles_ready()) {
+        get_feature_data(report_id, reqlen);
+        return 0;
     }
 
     std::vector<uint8_t> feature_data = get_feature_data(report_id, reqlen);
@@ -190,6 +230,10 @@ bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const *p_reques
         printf("[AUDIO] Set interface Speaker to alternate setting %d\n", alt);
         spk_active = alt;
     }
+    if (itf == 2) { // ITF_NUM_AUDIO_STREAMING_IN (microphone)
+        printf("[AUDIO] Set interface Microphone to alternate setting %d\n", alt);
+        set_mic_active(alt);
+    }
 
     return true;
 }
@@ -198,6 +242,12 @@ bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const *p_reques
 // received data on OUT endpoint ( Report ID = 0, Type = 0 )
 void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type, uint8_t const *buffer,
                            uint16_t bufsize) {
+#ifdef ENABLE_WAKE_HID
+    if (itf == 1) {
+        // Drop keyboard SET_REPORT (host LED state).
+        return;
+    }
+#endif
     (void) itf;
     (void) report_id;
     (void) report_type;
@@ -205,7 +255,9 @@ void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t rep
     (void) bufsize;
 
     if (is_pico_cmd(report_id)) {
+#if ENABLE_VERBOSE
         printf("[HID] Receive 0xf6 setting config, funcid:0x%02X\n", buffer[0]);
+#endif
         pico_cmd_set(report_id, buffer, bufsize);
         return;
     }
@@ -215,7 +267,9 @@ void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t rep
         switch (buffer[0]) {
             case 0x02: {
                 state_update(buffer + 1, bufsize - 1);
-                if (spk_active) {
+                bool send_now = ((buffer[1] >> 1) & 1) || // UseRumbleNotHaptics
+                                ((buffer[39] >> 3) & 1); // UseRumbleNotHaptics2
+                if (!send_now && spk_active) {
                     break;
                 }
                 uint8_t outputData[78]{};
@@ -226,7 +280,7 @@ void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t rep
                 }
                 outputData[2] = 0x10;
                 // memcpy(outputData + 3, buffer + 1, bufsize - 1);
-                state_set(outputData + 3,sizeof(SetStateData));
+                state_set(outputData + 3, sizeof(SetStateData));
                 bt_write(outputData, sizeof(outputData));
                 break;
             }
@@ -238,14 +292,15 @@ void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t rep
         report_id == 0x62 ||
         report_id == 0x61) {
         set_feature_data(report_id, const_cast<uint8_t *>(buffer), bufsize);
-        return;
     }
 }
 
 int main() {
+#if SYS_CLOCK_KHZ != 150000
     vreg_set_voltage(VREG_VOLTAGE_1_20);
     sleep_ms(1000);
     set_sys_clock_khz(SYS_CLOCK_KHZ, true);
+#endif
 
     board_init();
     tusb_rhport_init_t dev_init = {
@@ -254,6 +309,7 @@ int main() {
     };
     tusb_init(BOARD_TUD_RHPORT, &dev_init);
 #if !ENABLE_SERIAL
+    sleep_ms(150);
     tud_disconnect();
 #endif
     board_init_after_tusb();
@@ -290,6 +346,7 @@ int main() {
 
     // Initialize the critical section for the report buffer
     critical_section_init(&report_cs);
+    wake_init();
 
     config_load();
 
@@ -309,10 +366,14 @@ int main() {
 #endif
         cyw43_arch_poll();
         tud_task();
+        wake_task();
         audio_loop();
         interrupt_loop();
 #if ENABLE_BATT_LED
         battery_led_tick();
 #endif
+        button_check();
+        bt_inquiring_led();
+        dse_task();
     }
 }
