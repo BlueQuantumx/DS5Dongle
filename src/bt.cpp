@@ -150,8 +150,6 @@ int bt_init() {
     gap_ssp_set_io_capability(SSP_IO_CAPABILITY_DISPLAY_YES_NO);
     gap_ssp_set_authentication_requirement(SSP_IO_AUTHREQ_MITM_PROTECTION_NOT_REQUIRED_GENERAL_BONDING);
 
-    gap_set_page_scan_activity(0x0012, 0x0012); // 11.25ms
-    gap_set_page_scan_type(PAGE_SCAN_MODE_INTERLACED);
     gap_connectable_control(1);
     gap_discoverable_control(1);
 
@@ -374,6 +372,8 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
             const uint8_t state = btstack_event_state_get_state(packet);
             printf("[BT] State: %u\n", state);
             if (state == HCI_STATE_WORKING) {
+                gap_set_page_scan_activity(0x0012, 0x0012); // 11.25ms
+                gap_set_page_scan_type(PAGE_SCAN_MODE_INTERLACED);
                 printf("[BT] Stack ready, start inquiry\n");
                 bt_blacklist_load();
                 gap_inquiry_start(30);
