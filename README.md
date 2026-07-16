@@ -113,6 +113,10 @@ You can modify the Pico settings via the web config.
 > native haptics anti-aliasing, audio-leak, trigger vibrations, trigger resistance, gyro-aiming, automated profile loading.
 > [Detail Introduction](https://github.com/awalol/DS5Dongle/issues/221)
 
+### DS4Dongle [snipem/DS4Dongle](https://github.com/snipem/DS4Dongle)
+
+> Firmware for the Raspberry Pi Pico 2 W that works for DualShock 4. Inspired by DS5Dongle with headset and microphone support and configuration abilities.
+
 ### [zurce/DS5Dongle-OLED](https://github.com/zurce/DS5Dongle-OLED)
 
 ## Notes
