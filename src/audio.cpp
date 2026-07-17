@@ -73,6 +73,11 @@ struct haptics_element {
     uint8_t data[64];
 };
 
+// Streaming state for hardware-throttled USB microphone transmission
+static mic_decode_element active_mic_frame{};
+static uint32_t active_frame_offset = 0;
+static bool has_active_frame = false;
+
 void set_headset(bool state) {
     plug_headset = state;
 }
@@ -88,14 +93,26 @@ bool audio_mic_active() {
     return mic_active;
 }
 
+// Avoid saturating the Bluetooth bandwidth with redundant state packets.
+// We only transmit the mic status packet to the controller when the state 
+// actually changes (e.g., when the host starts or stops recording).
 void update_mic_status() {
+    static bool last_sent_state = false;
+    const bool current_state = (mic_active && get_config().mic_select != 3);
+    
+    if (current_state == last_sent_state) {
+        return; 
+    }
+    last_sent_state = current_state;
+
     uint8_t pkt[142]{};
     pkt[0] = 0x32;
     pkt[1] = reportSeqCounter << 4;
     reportSeqCounter = (reportSeqCounter + 1) & 0x0F;
     pkt[2] = 0x11 | 0 << 6 | 1 << 7;
     pkt[3] = 1;
-    pkt[4] = (mic_active && get_config().mic_select != 3) ? 0b00000011 : 0b00000010;
+    // pkt[4] = (mic_active && get_config().mic_select != 3) ? 0b00000011 : 0b00000010;
+    pkt[4] = current_state ? 0b00000011 : 0b00000010;
     bt_write(pkt, sizeof(pkt));
 }
 
@@ -178,6 +195,7 @@ void __not_in_flash_func(audio_loop)() {
     const bool mic_enabled = mic_active && cfg.mic_select != 3;
     const bool speaker_enabled = cfg.speaker_select != 3;
 
+    /* 
     // Mic playback: drain decoded mic PCM into the USB IN endpoint
     static mic_decode_element mic_pb{};
     if (queue_try_remove(&mic_decode_fifo, &mic_pb)) {
@@ -203,6 +221,61 @@ void __not_in_flash_func(audio_loop)() {
 #endif
             }
         }
+    */
+
+    // --- BUGFIX: HARDWARE-THROTTLED DIRECT SLICE DRAINING ---
+    // Slaves the microphone transmission speed to the USB host clock.
+    // Instead of pushing entire decoded frames at once (which causes buffer
+    // overflows and digital echo on strict OS stacks like macOS CoreAudio), 
+    // we query TinyUSB's transmit FIFO capacity and feed it 1ms slices (192 bytes)
+    // precisely when the host is ready to consume them.
+
+    if (mic_enabled) {
+        tu_fifo_t* tx_fifo = tud_audio_get_ep_in_ff();
+        
+        while (tx_fifo && tu_fifo_remaining(tx_fifo) >= 192) {
+            if (!has_active_frame) {
+                if (queue_try_remove(&mic_decode_fifo, &active_mic_frame)) {
+                    has_active_frame = true;
+                    active_frame_offset = 0;
+                } else {
+                    // Buffer Underrun Safety: If the decode queue runs dry, we MUST
+                    // feed the USB interface with silence to keep the stream alive.
+                    // This prevents macOS CoreAudio from resetting the driver.
+                    int16_t silence[96] = {0};
+                    tud_audio_write(silence, sizeof(silence));
+                    break; 
+                }
+            }
+
+            if (has_active_frame) {
+                int16_t usb_tx_buf[96]; // 48 Stereo-Frames (192 Bytes)
+                const int16_t* src = active_mic_frame.data;
+                const uint32_t total_samples = active_mic_frame.len / sizeof(int16_t);
+                const uint32_t samples_needed = 48;
+
+                for (uint32_t i = 0; i < samples_needed; i++) {
+                    uint32_t src_idx = active_frame_offset + i;
+                    if (src_idx < total_samples) {
+                        int16_t sample = src[src_idx];
+                        usb_tx_buf[i * 2] = sample;     // Duplicate mono to Left
+                        usb_tx_buf[i * 2 + 1] = sample; // Duplicate mono to Right
+                    } else {
+                        usb_tx_buf[i * 2] = 0;
+                        usb_tx_buf[i * 2 + 1] = 0;
+                    }
+                }
+
+                tud_audio_write(usb_tx_buf, sizeof(usb_tx_buf));
+                active_frame_offset += samples_needed;
+
+                if (active_frame_offset >= total_samples) {
+                    has_active_frame = false; // Current frame completely drained
+                }
+            }
+        }
+    } else {
+        has_active_frame = false;
     }
 
     audio_bt_task();
@@ -302,8 +375,15 @@ void audio_init() {
     queue_init(&haptics_fifo, sizeof(haptics_element), 2);
     // Mic queues are read from audio_loop on core0 every iteration, so they
     // must exist regardless of the speaker-proc build flag.
-    queue_init(&mic_fifo, sizeof(mic_element), 2);
-    queue_init(&mic_decode_fifo, sizeof(mic_decode_element), 2);
+    //
+    // BUGFIX: ELASTIC BUFFER EXTENSION:
+    // Increased microphone queues to depth 8 (~80ms buffer size).
+    // This absorbs initial Opus encoder/decoder warm-up delays and mitigates
+    // startup crackling/stuttering under Core 1 task schedulers.
+    // queue_init(&mic_fifo, sizeof(mic_element), 2);
+    // queue_init(&mic_decode_fifo, sizeof(mic_decode_element), 2);
+    queue_init(&mic_fifo, sizeof(mic_element), 8);
+    queue_init(&mic_decode_fifo, sizeof(mic_decode_element), 8);
 #if !DISABLE_SPEAKER_PROC
     queue_init(&audio_fifo, sizeof(audio_raw_element), 2);
     queue_init(&audio_spk_fifo, sizeof(audio_spk_element), 2);
@@ -397,6 +477,12 @@ void __not_in_flash_func(core1_entry)() {
     // floats QSPI CSn) - the latter makes polling BOOTSEL safe while audio streams on
     // core1. Requires PICO_FLASH_ASSUME_CORE1_SAFE=0.
     flash_safe_execute_core_init();
+    
+    // Allow Core 0 to fully initialize Bluetooth and USB stacks before Core 1 starts processing
+    // otherwise the dongle could shut down at initialization
+    // TODO: Search for initialization callbacks of core 0
+    sleep_ms(300);
+
     int error = 0;
     encoder = opus_encoder_create(48000, 2,OPUS_APPLICATION_AUDIO, &error);
     if (error != 0) {
@@ -417,8 +503,25 @@ void __not_in_flash_func(core1_entry)() {
     }
 
     while (true) {
-        speaker_proc();
-        mic_proc();
+        bool work_done = false;
+        
+        // Only enter processing if data is actually waiting.
+        // This avoids constantly acquiring queue locks (spinlocks) when idle,
+        // which would otherwise thrash the RP2350 system bus and starve Core 0.
+        if (queue_get_level(&audio_fifo) > 0) {
+            speaker_proc();
+            work_done = true;
+        }
+        if (queue_get_level(&mic_fifo) > 0) {
+            mic_proc();
+            work_done = true;
+        }
+        
+        // If both queues are empty, we can safely sleep.
+        // This prevents 100% CPU usage while maintaining sub-millisecond response times.
+        if (!work_done) {
+            sleep_us(10); 
+        }
     }
 }
 
