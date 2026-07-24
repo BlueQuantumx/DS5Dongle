@@ -7,7 +7,7 @@
 #include <cmath>
 #include <cstring>
 
-#include "state_mgr.h"
+#include "bt.h"
 #include "utils.h"
 #include "hardware/flash.h"
 #include "hardware/sync.h"
@@ -94,13 +94,13 @@ void config_valid() {
         body->ps_shortcut_enabled = 0;
         printf("[Config] ps_shortcut_enabled is invalid\n");
     }
-    if (body->disable_mic > 1) {
-        body->disable_mic = 0;
-        printf("[Config] disable_mic is invalid\n");
+    if (body->mic_select > 3) {
+        body->mic_select = 0;
+        printf("[Config] mic_select is invalid\n");
     }
-    if (body->disable_speaker > 1) {
-        body->disable_speaker = 0;
-        printf("[Config] disable_speaker is invalid\n");
+    if (body->speaker_select > 3) {
+        body->speaker_select = 0;
+        printf("[Config] speaker_select is invalid\n");
     }
     if (body->enable_wake > 1) {
         body->enable_wake = 0;
@@ -169,13 +169,18 @@ void set_config(const uint8_t *new_config, const uint16_t len) {
     }else {
         cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, true);
     }
-    set_volume(config.body.speaker_volume,config.body.headset_volume);
-    if (config.body.speaker_gain != 0) {
-        set_gain(config.body.speaker_gain);
+    SetStateData state{};
+    if (config.body.trigger_reduce > 0) {
+        state.AllowMotorPowerLevel = 1;
+        state.TriggerMotorPowerReduction = config.body.trigger_reduce;
     }
-    if (config.body.trigger_reduce != 0) {
-        set_trigger_reduce(config.body.trigger_reduce);
+    if (config.body.speaker_gain > 0) {
+        state.AllowAudioControl2 = 1;
+        state.SpeakerCompPreGain = config.body.speaker_gain;
     }
+    state.AllowAudioControl = 1;
+    state.MicSelect = config.body.mic_select;
+    update_state(state);
 }
 
 void set_config(const Config_body &new_config) {

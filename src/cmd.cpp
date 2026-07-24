@@ -15,9 +15,6 @@
 #include "audio.h"
 #include "wake.h"
 
-// spk_active (main.cpp) + audio_mic_active() (audio.cpp) are surfaced in the
-// 0xf9 feature report so the config UI can display the real gated mic/speaker
-// state, reflecting the disable_mic / disable_speaker settings.
 extern bool spk_active;
 
 bool is_pico_cmd(uint8_t report_id) {
@@ -57,12 +54,12 @@ uint16_t pico_cmd_get(uint8_t report_id, uint8_t *buffer, uint16_t reqlen) {
         buffer[0] = rssi;
         // byte 1: real audio gating state, for the config UI to display.
         //   bit7 = valid marker (firmware without this byte leaves it 0)
-        //   bit0 = controller mic actually streaming (host opened it AND !disable_mic)
-        //   bit1 = controller speaker actually driven (host opened it AND !disable_speaker)
+        //   bit0 = controller mic actually streaming (host opened it AND mic_select != disable)
+        //   bit1 = controller speaker actually driven (host opened it AND speaker_select != disable)
         if (reqlen >= 2) {
             uint8_t flags = 0x80;
-            if (audio_mic_active() && !get_config().disable_mic) flags |= 0x01;
-            if (spk_active && !get_config().disable_speaker) flags |= 0x02;
+            if (audio_mic_active() && get_config().mic_select != 3) flags |= 0x01;
+            if (spk_active && get_config().speaker_select != 3) flags |= 0x02;
             buffer[1] = flags;
             return 2;
         }

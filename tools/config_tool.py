@@ -10,8 +10,7 @@ Protocol (see src/cmd.cpp / src/config.h):
       funcid 0x02          -> persist config to flash
       funcid 0x03          -> reconnect the USB device
 
-Config_body is a packed struct: uint8 config_version, float haptics_gain,
-then 13 uint8 fields. Total 18 bytes.
+Config_body is a packed struct; this tool derives the binary layout from FIELDS.
 
 Requires: pip install hidapi
 
@@ -72,8 +71,8 @@ FIELDS = [
     ("controller_mode",    "u8",    lambda v: v in (0, 1, 2),    "0:DS5 1:DSE 2:Auto"),
     ("enable_usb_sn",      "u8",    lambda v: v in (0, 1),       "0/1 (USB serial number)"),
     ("ps_shortcut_enabled","u8",    lambda v: v in (0, 1),       "0/1 (Xbox Game Bar via HID keyboard)"),
-    ("disable_mic",        "u8",    lambda v: v in (0, 1),       "0/1 (disable controller mic)"),
-    ("disable_speaker",    "u8",    lambda v: v in (0, 1),       "0/1 (disable speaker/headset)"),
+    ("mic_select",         "u8",    lambda v: v in (0, 1, 2, 3), "0:auto 1:builtin 2:headphone 3:disable"),
+    ("speaker_select",     "u8",    lambda v: v in (0, 1, 2, 3), "0:auto 1:builtin 2:headphone 3:disable"),
     ("enable_wake",        "u8",    lambda v: v in (0, 1),       "0/1 (wake host on PS press)"),
     ("trigger_reduce",     "u8",    lambda v: 0 <= v <= 10,      "[0, 10] (0: auto)"),
     ("lock_volume",        "u8",    lambda v: v in (0, 1),       "0/1 (ignore the volume change from SetStateData(game or software))"),

@@ -17,17 +17,12 @@
 #include "bsp/board_api.h"
 #include "classic/sdp_server.h"
 #include "config.h"
-#include "state_mgr.h"
 #include "dse.h"
 #include "wake.h"
 #include "pico/util/queue.h"
 #if ENABLE_BATT_LED
 #include "battery_led.h"
 #endif
-#include "hardware/sync.h"
-#include "hardware/structs/ioqspi.h"
-#include "hardware/structs/sio.h"
-#include "pico/flash.h"
 #if PICO_RP2350
 #include "hardware/regs/sio.h"
 #endif
@@ -77,7 +72,7 @@ unordered_map<uint8_t, vector<uint8_t> > feature_data;
 queue_t send_fifo;
 
 struct send_element {
-    uint8_t data[512];
+    uint8_t data[672];
     size_t len;
 };
 
@@ -155,8 +150,6 @@ int bt_init() {
     gap_ssp_set_io_capability(SSP_IO_CAPABILITY_DISPLAY_YES_NO);
     gap_ssp_set_authentication_requirement(SSP_IO_AUTHREQ_MITM_PROTECTION_NOT_REQUIRED_GENERAL_BONDING);
 
-    gap_set_page_scan_activity(0x0012, 0x0012); // 11.25ms
-    gap_set_page_scan_type(PAGE_SCAN_MODE_INTERLACED);
     gap_connectable_control(1);
     gap_discoverable_control(1);
 
@@ -379,6 +372,8 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
             const uint8_t state = btstack_event_state_get_state(packet);
             printf("[BT] State: %u\n", state);
             if (state == HCI_STATE_WORKING) {
+                gap_set_page_scan_activity(0x0012, 0x0012); // 11.25ms
+                gap_set_page_scan_type(PAGE_SCAN_MODE_INTERLACED);
                 printf("[BT] Stack ready, start inquiry\n");
                 bt_blacklist_load();
                 gap_inquiry_start(30);
@@ -731,15 +726,20 @@ static void __not_in_flash_func(l2cap_packet_handler)(uint8_t packet_type, uint1
                     printf("Init DualSense\n");
 
                     init_feature();
-                    // 初始化手柄状态
-                    state_init();
-                    uint8_t report32[142]{};
-                    report32[0] = 0x32;
-                    report32[1] = 0x10; // reportSeqCounter
-                    report32[2] = 0x10 | 0 << 6 | 1 << 7;
-                    report32[3] = 0x3f; // 63 bytes
-                    state_set(report32 + 4,sizeof(SetStateData));
-                    bt_write(report32, sizeof(report32));
+                    SetStateData state = {
+                        .AllowAudioControl = 1,
+                        .AllowLedColor = 1,
+                        .MicSelect = get_config().mic_select,
+                        .AllowLightBrightnessChange = 1,
+                        .AllowColorLightFadeAnimation = 1,
+                        .LightFadeAnimation = LightFadeAnimation::FadeOut,
+                        .LightBrightness = LightBrightness::Bright,
+                        // RGB LED: R, G, B (Nijika Color!)✨
+                        .LedRed = 0xff,
+                        .LedGreen = 0xd7,
+                        .LedBlue = 0x00,
+                    };
+                    update_state(state);
 
                     const auto mtu = l2cap_get_remote_mtu_for_local_cid(hid_interrupt_cid);
                     printf("[L2CAP] Remote Interrupt MTU: %d\n",mtu);
@@ -848,7 +848,7 @@ vector<uint8_t> get_feature_data(uint8_t reportId, uint16_t len) {
     }
     if (!has_cached_report ||
         // Get Test Command Result
-        reportId == 0x81 ||
+        // reportId == 0x81 ||
         // DSE: Set Profile Save?
         reportId == 0x63 ||
         reportId == 0x65 ||
@@ -901,4 +901,14 @@ void init_feature() {
     // If len == 1, it's DS5
     check_dse = true;
     get_feature_data(0x70, 64);
+}
+
+void update_state(const SetStateData& state) {
+    uint8_t pkt[142]{};
+    pkt[0] = 0x32;
+    pkt[1] = 0x10;
+    pkt[2] = 0x90;
+    pkt[3] = 0x3f;
+    memcpy(pkt + 4,&state,sizeof(SetStateData));
+    bt_write(pkt,sizeof(pkt));
 }

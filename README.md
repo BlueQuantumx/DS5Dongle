@@ -107,6 +107,16 @@ You can modify the Pico settings via the web config.
 > test, gyro tilt, touchpad, diagnostics, CPU/clock, BT signal strength, audio VU meters, and a persistent settings menu),
 > plus a DS5 button-combo soft-reboot.
 
+### [artzox/DS5Dongle](https://github.com/artzox/DS5Dongle)
+
+> Building on Awalol's and Loteran's work to expand simulated haptics and add new features like 
+> native haptics anti-aliasing, audio-leak, trigger vibrations, trigger resistance, gyro-aiming, automated profile loading.
+> [Detail Introduction](https://github.com/awalol/DS5Dongle/issues/221)
+
+### DS4Dongle [snipem/DS4Dongle](https://github.com/snipem/DS4Dongle)
+
+> Firmware for the Raspberry Pi Pico 2 W that works for DualShock 4. Inspired by DS5Dongle with headset and microphone support and configuration abilities.
+
 ### [zurce/DS5Dongle-OLED](https://github.com/zurce/DS5Dongle-OLED)
 
 ## Notes
@@ -209,7 +219,7 @@ Build a variant with `-Variant debug`.
 
 To build from source manually:
 
-1. Install the Pico SDK 2.2.0 and switch its TinyUSB submodule to tag 0.20.0
+1. Install the Pico SDK 2.3.0 and switch its TinyUSB submodule to tag 0.21.0
    i.e. ***Update TinyUSB in the Pico SDK to the latest version***
 2. Initialise this repo's submodules: `git submodule update --init --recursive`
 3. Configure and build with the standard Pico SDK toolchain:
@@ -294,7 +304,8 @@ After enabling the toggle (then **Reconnect USB** so the interface re-enumerates
 ## References
 
 - [rafaelvaloto/Pico_W-Dualsense](https://github.com/rafaelvaloto/Pico_W-Dualsense) — Project inspiration
-- [egormanga/SAxense](https://github.com/egormanga/SAxense) — Bluetooth Haptics POC
+- [egormanga/SAxense](https://apps.sdore.me/SAxense) — Bluetooth Haptics POC
 - [https://controllers.fandom.com/wiki/Sony_DualSense](https://controllers.fandom.com/wiki/Sony_DualSense) - DualSense
   data report structure documentation
 - [Paliverse/DualSenseX](https://github.com/Paliverse/DualSenseX) — Speaker report packet
+- [Nielk1’s research report and packet samples](https://github.com/egormanga/SAxense/issues/1)
